@@ -8,5 +8,5 @@ The challenge is to get the response information for each patient and read the f
 
 Following https://www.bioconductor.org/packages/release/bioc/vignettes/GeomxTools/inst/doc/GeomxSet_coercions.html
 
- 
+The response information is in the supplementary PDF (second to last page) in the data folder.  
 
