@@ -1,0 +1,183 @@
+---
+title: "GeoMx CRC Cabozantinib anti-PDL1"
+author: "Ming Tang"
+date: '2024-05-01'
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+library(GeomxTools)
+library(Seurat)
+library(SpatialDecon)
+library(patchwork)
+```
+
+
+```{r}
+datadir <- "data/GSE254054_RAW"
+DCCFiles <- dir(datadir, pattern=".dcc$", full.names=TRUE)
+PKCFiles <- "data/GSE254054_Hs_R_NGS_CTA_v1.0.pkc"
+
+```
+
+
+prepare the phenoData spread sheet 
+
+```{r}
+library(GEOquery)
+library(tidyverse)
+library(here)
+#getGEOSuppFiles(GEO ="GSE176021")
+# one can also get the matrix by setting GSEMatrix to TRUE
+meta<- getGEO(GEO= "GSE254054",GSEMatrix=FALSE)
+meta@gsms$GSM8032601@header$title
+
+meta@gsms$GSM8032601@header$supplementary_file_1
+
+dcc_file_names<- purrr::map(meta@gsms, ~.x@header$supplementary_file_1) %>%
+        stack()
+titles<- purrr::map(meta@gsms, ~.x@header$title) %>%
+        stack() %>%
+        dplyr::rename(sample_name = values)
+
+head(dcc_file_names)
+
+meta<- left_join(dcc_file_names, titles) %>%
+        mutate(dcc_file = basename(values)) %>%
+        select(-values)%>%
+        mutate(dcc_file = str_replace(dcc_file, ".gz", ""))
+
+library(xlsx)
+write.xlsx(meta, file = "~/Downloads/meta.xlsx",
+       append = FALSE, row.names = FALSE, sheetName = "CW005")
+```
+
+
+read the data into a GeoMxSet object
+
+```{r}
+demoData <-readNanoStringGeoMxSet(dccFiles = DCCFiles,
+                                          pkcFiles = PKCFiles,
+                                          phenoDataFile = "~/Downloads/meta.xlsx",
+                                          phenoDataSheet = "CW005",
+                                          phenoDataDccColName = "dcc_file",
+                                          )
+
+
+```
+
+normalization 
+
+```{r}
+demoData <- shiftCountsOne(demoData, useDALogic=TRUE)
+demoData <- setSegmentQCFlags(demoData, qcCutoffs = list(percentSaturation = 45))
+
+demoData <- setBioProbeQCFlags(demoData)
+
+# low sequenced ROIs
+lowSaturation <- which(protocolData(demoData)[["QCFlags"]]$LowSaturation)
+
+# probes that are considered outliers 
+lowQCprobes <- which(featureData(demoData)[["QCFlags"]]$LowProbeRatio | 
+                       featureData(demoData)[["QCFlags"]]$GlobalGrubbsOutlier)
+
+# remove low quality ROIs and probes
+passedQC <- demoData[-lowQCprobes, -lowSaturation]
+
+dim(demoData)
+dim(passedQC)
+```
+
+
+```{r}
+target_demoData <- aggregateCounts(demoData)
+
+featureType(target_demoData)
+
+data.frame(assayData(target_demoData)[["exprs"]][seq_len(3), seq_len(3)])
+
+
+norm_target_demoData <- normalize(target_demoData, norm_method="quant",
+                                  desiredQuantile = .75, toElt = "q_norm")
+```
+
+
+```{r}
+
+norm_mat<- assayData(norm_target_demoData)[["q_norm"]]
+
+head(meta)
+```
+
+
+Extract the response information.
+
+```{r}
+#install.packages("tabulizer") not working, have to install it from github
+
+if (!require("remotes")) {
+    install.packages("remotes")
+}
+
+remotes::install_github(c("ropensci/tabulizerjars", "ropensci/tabulizer"))
+
+library(tabulizer)
+
+out <- extract_tables("data/1467_2024_45960_MOESM1_ESM.pdf", pages = 13, guess = TRUE, 
+                      output = "data.frame")
+
+```
+Not working... change it manually
+
+responders:
+311
+333
+342
+345
+
+The rest are non-responders
+
+```{r}
+meta<- meta %>%
+        mutate(patient = str_replace(sample_name, "[Ss]lide[2]?[ Final]?-([0-9]{3})-.+", "\\1")) %>%
+        mutate(patient = str_replace(patient, "slide Final-([0-9]{3})-.+", "\\1")) %>%
+        mutate(region = str_replace(sample_name, ".+(Epi|Non-epi)$", "\\1"))
+
+
+meta<- meta %>%
+        mutate(response = case_when(
+                patient %in% c("311", "333", "342", "345") ~ "responder",
+                TRUE ~ "non-responder"
+        ))
+all.equal(sort(colnames(norm_mat)), sort(meta$dcc_file))
+
+norm_df<- norm_mat %>%
+        t() %>%
+        as.data.frame() %>%
+        tibble::rownames_to_column(var = "dcc_file") %>%
+        as_tibble()
+
+norm_df<- left_join(norm_df, meta)
+
+```
+
+plotting
+
+```{r}
+
+ggplot(norm_df, aes(x= response, y = PDCD1)) +
+        geom_boxplot(aes(fill = response), outlier.color = NA) +
+        geom_jitter(width = 0.2) +
+        facet_wrap(~region) +
+        xlab("")
+
+
+# PDL1
+ggplot(norm_df, aes(x= response, y = CD274)) +
+        geom_boxplot(aes(fill = response), outlier.color = NA) +
+        geom_jitter(width = 0.2) +
+        facet_wrap(~region) +
+        xlab("")        
+```
